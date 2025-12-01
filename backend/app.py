@@ -79,7 +79,20 @@ def get_video_info(url):
                             })
 
             # Sortiere nach Qualität (höchste zuerst)
-            formats.sort(key=lambda x: int(x.get('resolution', '0p').replace('p', '')), reverse=True)
+            def extract_height(resolution):
+                """Extrahiert die Höhe aus verschiedenen Auflösungsformaten"""
+                if not resolution or resolution == 'unknown':
+                    return 0
+                try:
+                    # Format 'widthxheight' (z.B. '1920x1080')
+                    if 'x' in resolution:
+                        return int(resolution.split('x')[-1])
+                    # Format 'heightp' (z.B. '1080p')
+                    return int(resolution.replace('p', ''))
+                except (ValueError, AttributeError):
+                    return 0
+
+            formats.sort(key=lambda x: extract_height(x.get('resolution', '0p')), reverse=True)
 
             return {
                 'title': info.get('title', 'Unknown'),
