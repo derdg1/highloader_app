@@ -1,0 +1,67 @@
+.download-button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-md);
+  min-height: 56px; /* iOS touch target - larger for primary action */
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, var(--success-color), #2ecc71);
+  border: none;
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--spacing-lg);
+  transition: all 0.3s ease;
+  box-shadow: var(--shadow-md);
+}
+
+.download-button:hover:not(:disabled) {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg);
+}
+
+.download-button:active:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.download-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: var(--text-secondary);
+}
+
+.download-icon {
+  font-size: 1.5rem;
+  animation: bounce 2s infinite;
+}
+
+.download-text {
+  letter-spacing: 0.5px;
+}
+
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.download-button:hover .download-icon {
+  animation-play-state: paused;
+}
+
+@media (min-width: 640px) {
+  .download-button {
+    font-size: 1.3rem;
+    min-height: 60px;
+  }
+
+  .download-icon {
+    font-size: 1.6rem;
+  }
+}

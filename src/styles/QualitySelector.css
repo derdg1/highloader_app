@@ -1,0 +1,53 @@
+.quality-selector {
+  margin-bottom: var(--spacing-lg);
+}
+
+.quality-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: var(--spacing-xs);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.quality-select {
+  width: 100%;
+  padding: var(--spacing-md);
+  min-height: 48px; /* iOS touch target */
+  font-size: 1rem;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right var(--spacing-sm) center;
+  background-size: 20px;
+  padding-right: calc(var(--spacing-lg) + 20px);
+}
+
+.quality-select:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+}
+
+.quality-select:hover {
+  border-color: var(--accent-color);
+}
+
+/* iOS specific styling */
+@supports (-webkit-touch-callout: none) {
+  .quality-select {
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+}
+
+@media (min-width: 640px) {
+  .quality-select {
+    font-size: 1.05rem;
+  }
+}
