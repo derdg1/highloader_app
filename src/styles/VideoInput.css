@@ -1,0 +1,105 @@
+.video-input {
+  margin-bottom: var(--spacing-lg);
+}
+
+.video-input form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.input-wrapper {
+  display: flex;
+  gap: var(--spacing-xs);
+  width: 100%;
+}
+
+.url-input {
+  flex: 1;
+  padding: var(--spacing-md);
+  font-size: 1rem;
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  transition: border-color 0.2s ease;
+  min-height: 44px; /* iOS touch target */
+}
+
+.url-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.url-input::placeholder {
+  color: var(--text-secondary);
+}
+
+.url-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.paste-button {
+  padding: 0 var(--spacing-md);
+  min-width: 44px; /* iOS touch target */
+  min-height: 44px;
+  background-color: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: var(--radius-md);
+  font-size: 1.5rem;
+  transition: all 0.2s ease;
+}
+
+.paste-button:hover:not(:disabled) {
+  background-color: var(--accent-color);
+  border-color: var(--accent-color);
+  transform: scale(1.05);
+}
+
+.paste-button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.paste-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.submit-button {
+  width: 100%;
+  padding: var(--spacing-md);
+  min-height: 48px; /* iOS touch target */
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: white;
+  background-color: var(--accent-color);
+  border: none;
+  border-radius: var(--radius-md);
+  transition: all 0.2s ease;
+}
+
+.submit-button:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.submit-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.submit-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (min-width: 640px) {
+  .url-input {
+    font-size: 1.05rem;
+  }
+
+  .submit-button {
+    font-size: 1.15rem;
+  }
+}
