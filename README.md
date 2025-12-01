@@ -18,6 +18,44 @@ Eine Progressive Web App zum Herunterladen von Videos von YouTube, TikTok und Re
 
 - Node.js 18+ und npm
 - Ein Backend-Server mit yt-dlp (siehe Backend-Setup)
+- Alternativ: Docker und Portainer für Container-Deployment
+
+### Docker Deployment (Empfohlen für Production)
+
+Die App kann als Docker Container deployed werden und ist auf Port **8888** verfügbar.
+
+#### Option 1: Mit Docker Compose
+
+```bash
+# Image von GitHub Container Registry ziehen
+docker compose pull
+
+# Container starten
+docker compose up -d
+```
+
+Die App ist dann verfügbar unter: `http://localhost:8888`
+
+#### Option 2: Mit Portainer Stack
+
+1. Log in zu Portainer
+2. Navigiere zu **Stacks** → **Add stack**
+3. Gib der Stack einen Namen (z.B. `pwa-video-downloader`)
+4. Kopiere den Inhalt von `docker-compose.yml` in den Editor
+5. Optional: Setze Environment Variable `GITHUB_REPOSITORY_OWNER` auf deinen GitHub Username
+6. Klicke auf **Deploy the stack**
+
+Die App läuft dann auf Port **8888** deines Servers.
+
+#### Manueller Docker Build
+
+```bash
+# Image bauen
+docker build -t pwa-video-downloader .
+
+# Container starten
+docker run -d -p 8888:8888 --name pwa-video-downloader pwa-video-downloader
+```
 
 ### Setup
 
@@ -121,6 +159,35 @@ Health-Check Endpoint.
 {
   "status": "ok"
 }
+```
+
+## 🔄 CI/CD Pipeline
+
+Das Projekt nutzt GitHub Actions für automatisches Build und Deployment:
+
+### Automatische Builds
+
+Bei jedem Push wird automatisch:
+1. Ein Docker Image gebaut
+2. Das Image zu GitHub Container Registry gepusht
+3. Multi-Arch Support (amd64 & arm64)
+
+### Image Tags
+
+- `latest` - Neuester Build vom Main Branch
+- `<branch-name>` - Build vom jeweiligen Branch
+- `<branch>-<sha>` - Build mit Git SHA
+
+### GitHub Container Registry
+
+Images sind verfügbar unter:
+```
+ghcr.io/<username>/highloader_app:latest
+```
+
+Um das Image zu pullen:
+```bash
+docker pull ghcr.io/<username>/highloader_app:latest
 ```
 
 ## 🛠️ Entwicklung
