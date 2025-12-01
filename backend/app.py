@@ -116,11 +116,13 @@ def get_video_info(url):
 def download_video_file(url, format_id):
     """
     Lädt Video herunter und gibt Dateipfad zurück
+    Falls das gewünschte Format nicht verfügbar ist, wird das beste verfügbare Format verwendet
     """
     # Eindeutiger Dateiname
     file_id = str(uuid.uuid4())
     output_template = str(TEMP_DIR / f"{file_id}.%(ext)s")
 
+    # Versuche zuerst mit dem gewünschten Format
     ydl_opts = {
         'format': format_id,
         'outtmpl': output_template,
@@ -149,6 +151,31 @@ def download_video_file(url, format_id):
             else:
                 raise Exception("Datei wurde nicht gefunden nach dem Download")
 
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        # Wenn das Format nicht verfügbar ist, versuche mit 'best' Format
+        if "Requested format is not available" in error_msg:
+            logger.warning(f"Format {format_id} nicht verfügbar, verwende bestes verfügbares Format")
+            ydl_opts['format'] = 'best'
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    logger.info(f"Starte Download mit bestem Format: URL={url}")
+                    info = ydl.extract_info(url, download=True)
+
+                    # Finde die heruntergeladene Datei
+                    downloaded_file = ydl.prepare_filename(info)
+
+                    if os.path.exists(downloaded_file):
+                        logger.info(f"Download erfolgreich mit bestem Format: {downloaded_file}")
+                        return downloaded_file, info.get('title', 'video')
+                    else:
+                        raise Exception("Datei wurde nicht gefunden nach dem Download")
+            except Exception as fallback_error:
+                logger.error(f"Fehler beim Fallback-Download: {fallback_error}")
+                raise
+        else:
+            logger.error(f"Fehler beim Download: {e}")
+            raise
     except Exception as e:
         logger.error(f"Fehler beim Download: {e}")
         raise
