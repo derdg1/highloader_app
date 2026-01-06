@@ -59,30 +59,58 @@ def get_video_info(url):
 
             # Formatiere die verfügbaren Formate
             formats = []
-            seen_qualities = set()
+            seen_resolutions = {}  # Speichere beste Formate pro Auflösung
 
             if 'formats' in info:
                 for fmt in info['formats']:
-                    # Nur Video+Audio oder Video-only Formate
+                    # Nur Video-Formate (mit oder ohne Audio)
                     if fmt.get('vcodec') != 'none':
+                        height = fmt.get('height')
                         quality = fmt.get('format_note', 'unknown')
-                        resolution = fmt.get('resolution', 'unknown')
                         ext = fmt.get('ext', 'mp4')
                         filesize = fmt.get('filesize') or fmt.get('filesize_approx', 0)
+                        has_audio = fmt.get('acodec') != 'none'
 
-                        # Erstelle eindeutigen Qualitäts-String
-                        quality_str = f"{resolution}-{quality}"
+                        # Erstelle Auflösungsstring
+                        if height:
+                            resolution = f"{height}p"
+                        else:
+                            resolution = fmt.get('resolution', 'unknown')
 
-                        if quality_str not in seen_qualities:
-                            seen_qualities.add(quality_str)
-                            formats.append({
+                        # Bevorzuge Formate mit Audio, sonst nehme höchste Bitrate
+                        if resolution not in seen_resolutions:
+                            seen_resolutions[resolution] = {
                                 'format_id': fmt['format_id'],
                                 'quality': quality,
                                 'resolution': resolution,
                                 'ext': ext,
                                 'filesize': filesize,
-                                'has_audio': fmt.get('acodec') != 'none'
-                            })
+                                'has_audio': has_audio,
+                                'height': height or 0,
+                                'vbr': fmt.get('vbr', 0) or 0
+                            }
+                        else:
+                            # Aktualisiere wenn: (1) neues hat Audio und altes nicht, oder (2) beide gleich aber höhere Bitrate
+                            existing = seen_resolutions[resolution]
+                            if (has_audio and not existing['has_audio']) or \
+                               (has_audio == existing['has_audio'] and
+                                (fmt.get('vbr', 0) or 0) > existing['vbr']):
+                                seen_resolutions[resolution] = {
+                                    'format_id': fmt['format_id'],
+                                    'quality': quality,
+                                    'resolution': resolution,
+                                    'ext': ext,
+                                    'filesize': filesize,
+                                    'has_audio': has_audio,
+                                    'height': height or 0,
+                                    'vbr': fmt.get('vbr', 0) or 0
+                                }
+
+                # Konvertiere Dictionary zu List
+                formats = [
+                    {k: v for k, v in fmt.items() if k not in ['vbr']}  # Entferne vbr vor Rückgabe
+                    for fmt in seen_resolutions.values()
+                ]
 
             # Sortiere nach Qualität (höchste zuerst)
             def extract_height(resolution):
@@ -123,12 +151,18 @@ def download_video_file(url, format_id):
     output_template = str(TEMP_DIR / f"{file_id}.%(ext)s")
 
     # Versuche zuerst mit dem gewünschten Format
+    # Format-String: format_id+bestaudio = Video-Format + bestes Audio, automatisch gemergt
+    # Fallback auf 'best' wenn Merge nicht möglich
     ydl_opts = {
-        'format': format_id,
+        'format': f'{format_id}+bestaudio/best',
         'outtmpl': output_template,
         'quiet': False,
         'no_warnings': False,
         'merge_output_format': 'mp4',
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'web'],
