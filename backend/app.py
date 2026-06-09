@@ -83,12 +83,6 @@ def get_video_info(url):
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
     }
 
     try:
@@ -202,12 +196,6 @@ def download_video_file(url, format_id):
             'key': 'FFmpegVideoConvertor',
             'preferedformat': 'mp4',
         }],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'web'],
-                'player_skip': ['webpage', 'configs'],
-            }
-        },
     }
 
     try:

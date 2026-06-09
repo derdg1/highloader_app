@@ -1,4 +1,6 @@
 Flask==3.0.0
 flask-cors==4.0.0
-yt-dlp==2025.11.12
+# yt-dlp bewusst nicht gepinnt: YouTube ändert sich laufend, beim Image-Build
+# soll immer die aktuelle Version mit den neuesten Extractor-Fixes installiert werden
+yt-dlp>=2025.11.12
 gunicorn==21.2.0
