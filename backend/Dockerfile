@@ -15,8 +15,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Kopiere Anwendungscode
 COPY app.py .
 
+# Unprivilegierter User für den App-Prozess
+RUN useradd --system --create-home --uid 1000 appuser
+
 # Erstelle Verzeichnis für temporäre Downloads
-RUN mkdir -p /tmp/video_downloads
+RUN mkdir -p /tmp/video_downloads && chown appuser:appuser /tmp/video_downloads
+
+USER appuser
 
 # Exponiere Port
 EXPOSE 8000

@@ -202,7 +202,14 @@ export function validateVideoUrl(url) {
       'vm.tiktok.com',
     ]
 
-    return validDomains.some(domain => urlObj.hostname.includes(domain))
+    if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
+      return false
+    }
+
+    const hostname = urlObj.hostname.toLowerCase()
+    return validDomains.some(
+      domain => hostname === domain || hostname.endsWith(`.${domain}`)
+    )
   } catch {
     return false
   }
