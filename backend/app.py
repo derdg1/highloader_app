@@ -10,10 +10,17 @@ import os
 import tempfile
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 import uuid
 
 app = Flask(__name__)
-CORS(app)
+
+# CORS nur aktivieren, wenn explizit Origins konfiguriert sind.
+# Im Normalbetrieb läuft das Frontend über den nginx-Proxy auf demselben
+# Origin und braucht kein CORS.
+_cors_origins = [o.strip() for o in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',') if o.strip()]
+if _cors_origins:
+    CORS(app, origins=_cors_origins)
 
 # Logging konfigurieren
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +29,37 @@ logger = logging.getLogger(__name__)
 # Temporäres Verzeichnis für Downloads
 TEMP_DIR = Path(tempfile.gettempdir()) / 'video_downloads'
 TEMP_DIR.mkdir(exist_ok=True)
+
+# Maximale Download-Größe (Schutz vor Disk-Füllung), konfigurierbar via Env
+MAX_DOWNLOAD_SIZE = int(os.environ.get('MAX_DOWNLOAD_SIZE_BYTES', 2 * 1024 ** 3))  # Default: 2 GiB
+
+# Erlaubte Video-Plattformen (SSRF-Schutz: URLs werden serverseitig geprüft,
+# bevor sie an yt-dlp übergeben werden)
+ALLOWED_VIDEO_HOSTS = (
+    'youtube.com',
+    'youtu.be',
+    'tiktok.com',
+    'vm.tiktok.com',
+    'reddit.com',
+    'redd.it',
+)
+
+
+def is_allowed_url(url):
+    """Prüft, ob die URL zu einer erlaubten Video-Plattform gehört"""
+    if not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ('http', 'https'):
+        return False
+    hostname = (parsed.hostname or '').lower()
+    return any(
+        hostname == allowed or hostname.endswith('.' + allowed)
+        for allowed in ALLOWED_VIDEO_HOSTS
+    )
 
 
 def clean_old_files():
@@ -158,6 +196,7 @@ def download_video_file(url, format_id):
         'outtmpl': output_template,
         'quiet': False,
         'no_warnings': False,
+        'max_filesize': MAX_DOWNLOAD_SIZE,
         'merge_output_format': 'mp4',
         'postprocessors': [{
             'key': 'FFmpegVideoConvertor',
@@ -233,6 +272,11 @@ def video_info():
             return jsonify({'error': 'URL fehlt'}), 400
 
         url = data['url']
+
+        if not is_allowed_url(url):
+            logger.warning(f"Abgelehnte URL (nicht erlaubter Host): {url}")
+            return jsonify({'error': 'URL wird nicht unterstützt. Erlaubt sind YouTube, TikTok und Reddit.'}), 400
+
         logger.info(f"Video-Info angefordert für: {url}")
 
         # Bereinige alte Dateien
@@ -245,10 +289,10 @@ def video_info():
 
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"yt-dlp Download-Fehler: {e}")
-        return jsonify({'error': f'Video konnte nicht geladen werden: {str(e)}'}), 400
+        return jsonify({'error': 'Video konnte nicht geladen werden. Bitte prüfe die URL.'}), 400
     except Exception as e:
         logger.error(f"Unerwarteter Fehler: {e}")
-        return jsonify({'error': f'Serverfehler: {str(e)}'}), 500
+        return jsonify({'error': 'Interner Serverfehler'}), 500
 
 
 @app.route('/api/download', methods=['POST'])
@@ -264,6 +308,10 @@ def download():
 
         url = data['url']
         format_id = data['format_id']
+
+        if not is_allowed_url(url):
+            logger.warning(f"Abgelehnte URL (nicht erlaubter Host): {url}")
+            return jsonify({'error': 'URL wird nicht unterstützt. Erlaubt sind YouTube, TikTok und Reddit.'}), 400
 
         logger.info(f"Download angefordert: URL={url}, Format={format_id}")
 
@@ -295,10 +343,10 @@ def download():
 
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"yt-dlp Download-Fehler: {e}")
-        return jsonify({'error': f'Video konnte nicht heruntergeladen werden: {str(e)}'}), 400
+        return jsonify({'error': 'Video konnte nicht heruntergeladen werden. Bitte prüfe die URL.'}), 400
     except Exception as e:
         logger.error(f"Unerwarteter Fehler beim Download: {e}")
-        return jsonify({'error': f'Download-Fehler: {str(e)}'}), 500
+        return jsonify({'error': 'Interner Serverfehler beim Download'}), 500
 
 
 if __name__ == '__main__':
