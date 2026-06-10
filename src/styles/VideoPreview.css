@@ -1,9 +1,16 @@
 .video-preview {
   background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   overflow: hidden;
   margin-bottom: var(--spacing-lg);
   box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.video-preview:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
 }
 
 .video-thumbnail {

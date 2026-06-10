@@ -11,14 +11,19 @@
 
 .app-header {
   text-align: center;
-  padding: var(--spacing-lg) 0;
+  padding: var(--spacing-lg) var(--spacing-sm);
+  background:
+    radial-gradient(120% 120% at 50% 0%,
+      color-mix(in srgb, var(--accent-color) 14%, transparent) 0%,
+      transparent 60%);
   border-bottom: 1px solid var(--border-color);
 }
 
 .app-header h1 {
-  font-size: clamp(1.5rem, 5vw, 2rem);
+  font-size: clamp(1.6rem, 5vw, 2.1rem);
   margin-bottom: var(--spacing-xs);
-  font-weight: 700;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
 .app-header p {
@@ -34,6 +39,11 @@
   padding: var(--spacing-lg) var(--spacing-sm);
 }
 
+/* Platz lassen, damit Inhalte nicht hinter der fixierten Statusleiste verschwinden */
+.app-main.has-status-bar {
+  padding-bottom: 130px;
+}
+
 .app-footer {
   text-align: center;
   padding: var(--spacing-md);
@@ -44,13 +54,26 @@
 
 /* Error Message */
 .error-message {
-  background-color: var(--error-color);
-  color: white;
+  background-color: color-mix(in srgb, var(--error-color) 12%, var(--bg-secondary));
+  color: var(--error-color);
+  border: 1px solid color-mix(in srgb, var(--error-color) 35%, transparent);
   padding: var(--spacing-md);
   border-radius: var(--radius-md);
   margin: var(--spacing-md) 0;
-  font-weight: 500;
+  font-weight: 600;
   text-align: center;
+  animation: fade-in 0.25s ease;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Loading Spinner */

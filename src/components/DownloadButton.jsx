@@ -1,14 +1,16 @@
 import '../styles/DownloadButton.css'
 
-function DownloadButton({ onClick, disabled }) {
+function DownloadButton({ onClick, disabled, downloading }) {
   return (
     <button
       className="download-button"
       onClick={onClick}
       disabled={disabled}
     >
-      <span className="download-icon">⬇️</span>
-      <span className="download-text">Video herunterladen</span>
+      <span className="download-icon">{downloading ? '⏳' : '⬇️'}</span>
+      <span className="download-text">
+        {downloading ? 'Lädt herunter…' : 'Video herunterladen'}
+      </span>
     </button>
   )
 }
