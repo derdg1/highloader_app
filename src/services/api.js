@@ -96,9 +96,10 @@ function parseContentDisposition(header) {
  * auch bei Audio/MP3).
  * @param {string} url - Die Video-URL
  * @param {Object} params - { format_id } oder { quality: 'best'|'1080'|'720'|'audio' }
+ * @param {Function} [onProgress] - Callback (received, total, filename); total=0 wenn unbekannt
  * @returns {Promise<string|null>} Der verwendete Dateiname
  */
-export async function triggerDownload(url, params) {
+export async function triggerDownload(url, params, onProgress) {
   const response = await fetchWithTimeout(
     `${API_BASE_URL}/download`,
     {
@@ -117,7 +118,26 @@ export async function triggerDownload(url, params) {
   }
 
   const filename = parseContentDisposition(response.headers.get('Content-Disposition'))
-  const blob = await response.blob()
+  const total = Number(response.headers.get('Content-Length')) || 0
+
+  let blob
+  // Streamen, um den Fortschritt zu verfolgen; Fallback auf .blob() wenn der
+  // Browser keinen lesbaren Body liefert oder kein Callback gesetzt ist
+  if (onProgress && response.body && response.body.getReader) {
+    const reader = response.body.getReader()
+    const chunks = []
+    let received = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value)
+      received += value.length
+      onProgress(received, total, filename)
+    }
+    blob = new Blob(chunks)
+  } else {
+    blob = await response.blob()
+  }
 
   if (blob.size === 0) {
     throw new Error('Download fehlgeschlagen: Datei ist leer')

@@ -5,6 +5,7 @@ import QualitySelector from './components/QualitySelector'
 import DownloadButton from './components/DownloadButton'
 import PlaylistView from './components/PlaylistView'
 import DownloadHistory from './components/DownloadHistory'
+import DownloadStatusBar from './components/DownloadStatusBar'
 import { fetchUrlInfo, triggerDownload } from './services/api'
 import './styles/App.css'
 
@@ -19,6 +20,7 @@ function App() {
   const [history, setHistory] = useState([])
   const [downloadingId, setDownloadingId] = useState(null)
   const [batchProgress, setBatchProgress] = useState(null)
+  const [downloadStatus, setDownloadStatus] = useState(null)
 
   useEffect(() => {
     const savedHistory = localStorage.getItem('downloadHistory')
@@ -40,6 +42,21 @@ function App() {
       const newHistory = [newHistoryItem, ...prev].slice(0, 20)
       localStorage.setItem('downloadHistory', JSON.stringify(newHistory))
       return newHistory
+    })
+  }
+
+  // Führt einen Download aus und aktualisiert dabei die Status-/Fortschrittsleiste.
+  // 'preparing' während der Server lädt/mergt, 'downloading' sobald Bytes ankommen.
+  const runDownload = async (target, params, batch = null) => {
+    setDownloadStatus({ phase: 'preparing', filename: target.title, received: 0, total: 0, batch })
+    await triggerDownload(target.url, params, (received, total, filename) => {
+      setDownloadStatus({
+        phase: 'downloading',
+        filename: filename || target.title,
+        received,
+        total,
+        batch,
+      })
     })
   }
 
@@ -70,17 +87,16 @@ function App() {
 
   const handleDownload = async () => {
     if (!videoInfo || !selectedQuality) return
-
-    setLoading(true)
     setError(null)
 
     try {
-      await triggerDownload(url, { format_id: selectedQuality })
+      await runDownload({ title: videoInfo.title, url }, { format_id: selectedQuality })
       pushHistory({ title: videoInfo.title, thumbnail: videoInfo.thumbnail, url })
+      setDownloadStatus((s) => (s ? { ...s, phase: 'done' } : s))
+      setTimeout(() => setDownloadStatus(null), 1800)
     } catch (err) {
+      setDownloadStatus(null)
       setError(err.message)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -89,9 +105,12 @@ function App() {
     setDownloadingId(entry.id)
     setError(null)
     try {
-      await triggerDownload(entry.url, { quality: playlistQuality })
+      await runDownload(entry, { quality: playlistQuality })
       pushHistory(entry)
+      setDownloadStatus((s) => (s ? { ...s, phase: 'done' } : s))
+      setTimeout(() => setDownloadStatus(null), 1800)
     } catch (err) {
+      setDownloadStatus(null)
       setError(`${entry.title}: ${err.message}`)
     } finally {
       setDownloadingId(null)
@@ -108,16 +127,17 @@ function App() {
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i]
-      setBatchProgress({ done: i, total: entries.length })
+      const batch = { done: i, total: entries.length }
+      setBatchProgress(batch)
       setDownloadingId(entry.id)
       try {
-        await triggerDownload(entry.url, { quality: playlistQuality })
+        await runDownload(entry, { quality: playlistQuality }, batch)
         pushHistory(entry)
       } catch (err) {
         if (err.status === 429) {
           await new Promise((r) => setTimeout(r, 3000))
           try {
-            await triggerDownload(entry.url, { quality: playlistQuality })
+            await runDownload(entry, { quality: playlistQuality }, batch)
             pushHistory(entry)
           } catch (retryErr) {
             failed.push(entry.title)
@@ -130,6 +150,8 @@ function App() {
 
     setBatchProgress({ done: entries.length, total: entries.length })
     setDownloadingId(null)
+    setDownloadStatus((s) => (s ? { ...s, phase: 'done' } : s))
+    setTimeout(() => setDownloadStatus(null), 1800)
     if (failed.length > 0) {
       setError(`${failed.length} von ${entries.length} Downloads fehlgeschlagen.`)
     }
@@ -140,14 +162,16 @@ function App() {
     localStorage.removeItem('downloadHistory')
   }
 
+  const isDownloading = downloadStatus !== null
+
   return (
     <div className="app">
       <header className="app-header">
         <h1>📥 Video Downloader</h1>
-        <p>Videos & Playlists von beliebigen Webseiten herunterladen</p>
+        <p>Videos &amp; Playlists von beliebigen Webseiten herunterladen</p>
       </header>
 
-      <main className="app-main">
+      <main className={`app-main ${isDownloading ? 'has-status-bar' : ''}`}>
         <VideoInput onSubmit={handleUrlSubmit} loading={loading} />
 
         {error && (
@@ -186,7 +210,8 @@ function App() {
             />
             <DownloadButton
               onClick={handleDownload}
-              disabled={!selectedQuality || loading}
+              disabled={!selectedQuality || isDownloading}
+              downloading={isDownloading}
             />
           </>
         )}
@@ -202,6 +227,8 @@ function App() {
       <footer className="app-footer">
         <p>PWA Video Downloader v1.1</p>
       </footer>
+
+      <DownloadStatusBar status={downloadStatus} />
     </div>
   )
 }
