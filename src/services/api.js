@@ -36,117 +36,103 @@ async function fetchWithTimeout(url, options = {}, timeout = DEFAULT_TIMEOUT) {
 }
 
 /**
- * Holt Video-Informationen vom Backend
- * @param {string} url - Die Video-URL (YouTube, TikTok, Reddit)
- * @returns {Promise<Object>} Video-Metadaten inkl. verfügbare Formate
+ * Holt Informationen zu einer URL vom Backend. Das Backend erkennt automatisch,
+ * ob es sich um ein Einzelvideo oder eine Playlist/einen Kanal handelt.
+ * @param {string} url - Die Video- oder Playlist-URL
+ * @returns {Promise<Object>} Bei Einzelvideo: { is_playlist:false, title, thumbnail, formats, ... }
+ *                            Bei Playlist:    { is_playlist:true, title, entry_count, entries: [...] }
  */
-export async function fetchVideoInfo(url) {
+export async function fetchUrlInfo(url) {
   try {
     const response = await fetchWithTimeout(
       `${API_BASE_URL}/video-info`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
       },
-      60000 // 1 Minute Timeout für Video-Info
+      60000 // 1 Minute Timeout für Info-Abruf
     )
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
-      const errorMessage = errorData.error || errorData.message || 'Unbekannter Fehler'
-
-      if (response.status === 400) {
-        throw new Error(`Ungültige Video-URL oder Video nicht verfügbar: ${errorMessage}`)
-      } else if (response.status === 500) {
-        throw new Error(`Server-Fehler: ${errorMessage}`)
-      } else if (response.status === 404) {
-        throw new Error('Backend-Server nicht erreichbar. Bitte prüfe die Verbindung.')
-      }
-
-      throw new Error(errorMessage)
+      throw new Error(errorData.error || errorData.message || 'Unbekannter Fehler')
     }
 
-    const data = await response.json()
-
-    return {
-      title: data.title,
-      thumbnail: data.thumbnail,
-      duration: data.duration,
-      uploader: data.uploader,
-      view_count: data.view_count,
-      formats: data.formats || [],
-    }
+    return await response.json()
   } catch (error) {
-    console.error('Error fetching video info:', error)
-
-    // Verbessere Fehlermeldungen für häufige Probleme
+    console.error('Error fetching url info:', error)
     if (error.message.includes('Failed to fetch')) {
       throw new Error('Keine Verbindung zum Server. Bitte überprüfe deine Internetverbindung.')
     }
-
     throw error
   }
 }
 
 /**
- * Lädt ein Video vom Backend herunter
- * @param {string} url - Die Video-URL
- * @param {string} formatId - Die gewählte Format-ID
- * @returns {Promise<Blob>} Video-Datei als Blob
+ * Liest den Dateinamen aus einem Content-Disposition-Header.
+ * Unterstützt sowohl filename="..." als auch filename*=UTF-8''...
+ * @param {string|null} header
+ * @returns {string|null}
  */
-export async function downloadVideo(url, formatId) {
-  try {
-    const response = await fetchWithTimeout(
-      `${API_BASE_URL}/download`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          url,
-          format_id: formatId,
-        }),
-      },
-      300000 // 5 Minuten Timeout für Download
-    )
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}))
-      const errorMessage = errorData.error || errorData.message || 'Unbekannter Fehler'
-
-      if (response.status === 400) {
-        throw new Error(`Download fehlgeschlagen: ${errorMessage}`)
-      } else if (response.status === 500) {
-        throw new Error(`Server-Fehler beim Download: ${errorMessage}`)
-      } else if (response.status === 404) {
-        throw new Error('Download-Service nicht verfügbar. Bitte versuche es später erneut.')
-      }
-
-      throw new Error(errorMessage)
+function parseContentDisposition(header) {
+  if (!header) return null
+  // RFC 5987: filename*=UTF-8''<percent-encoded>
+  const extended = header.match(/filename\*=(?:UTF-8'')?([^;]+)/i)
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ''))
+    } catch {
+      // fällt unten auf den einfachen Header zurück
     }
+  }
+  const simple = header.match(/filename="?([^";]+)"?/i)
+  return simple ? simple[1].trim() : null
+}
 
-    const blob = await response.blob()
+/**
+ * Lädt ein Video/Audio herunter und speichert es im Browser. Der Dateiname wird
+ * aus dem Content-Disposition-Header des Servers übernommen (korrekte Endung
+ * auch bei Audio/MP3).
+ * @param {string} url - Die Video-URL
+ * @param {Object} params - { format_id } oder { quality: 'best'|'1080'|'720'|'audio' }
+ * @returns {Promise<string|null>} Der verwendete Dateiname
+ */
+export async function triggerDownload(url, params) {
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/download`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, ...params }),
+    },
+    300000 // 5 Minuten Timeout für Download
+  )
 
-    // Prüfe ob wir wirklich einen Video-Blob erhalten haben
-    if (blob.size === 0) {
-      throw new Error('Download fehlgeschlagen: Datei ist leer')
-    }
-
-    return blob
-  } catch (error) {
-    console.error('Error downloading video:', error)
-
-    // Verbessere Fehlermeldungen
-    if (error.message.includes('Failed to fetch')) {
-      throw new Error('Download fehlgeschlagen: Keine Verbindung zum Server')
-    }
-
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}))
+    const error = new Error(errorData.error || errorData.message || 'Download fehlgeschlagen')
+    error.status = response.status
     throw error
   }
+
+  const filename = parseContentDisposition(response.headers.get('Content-Disposition'))
+  const blob = await response.blob()
+
+  if (blob.size === 0) {
+    throw new Error('Download fehlgeschlagen: Datei ist leer')
+  }
+
+  const objectUrl = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  if (filename) a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  window.URL.revokeObjectURL(objectUrl)
+  document.body.removeChild(a)
+
+  return filename
 }
 
 /**
@@ -186,30 +172,16 @@ export async function checkBackendHealth() {
 }
 
 /**
- * Validiert eine Video-URL
+ * Grobe Vorab-Prüfung im Browser, ob die Eingabe eine http(s)-URL ist.
+ * Die eigentliche Validierung (inkl. SSRF-Schutz) erfolgt serverseitig, da
+ * yt-dlp Hunderte Seiten unterstützt und keine Host-Allowlist mehr gilt.
  * @param {string} url - Die zu prüfende URL
- * @returns {boolean} true wenn URL valide ist
+ * @returns {boolean} true wenn die Eingabe wie eine http(s)-URL aussieht
  */
 export function validateVideoUrl(url) {
   try {
     const urlObj = new URL(url)
-    const validDomains = [
-      'youtube.com',
-      'youtu.be',
-      'tiktok.com',
-      'reddit.com',
-      'redd.it',
-      'vm.tiktok.com',
-    ]
-
-    if (urlObj.protocol !== 'http:' && urlObj.protocol !== 'https:') {
-      return false
-    }
-
-    const hostname = urlObj.hostname.toLowerCase()
-    return validDomains.some(
-      domain => hostname === domain || hostname.endsWith(`.${domain}`)
-    )
+    return urlObj.protocol === 'http:' || urlObj.protocol === 'https:'
   } catch {
     return false
   }

@@ -28,7 +28,7 @@ function VideoInput({ onSubmit, loading }) {
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Video-URL einfügen..."
+            placeholder="Video- oder Playlist-URL einfügen..."
             className="url-input"
             disabled={loading}
           />

@@ -7,6 +7,8 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import yt_dlp
 import os
+import socket
+import ipaddress
 import tempfile
 import logging
 from pathlib import Path
@@ -33,33 +35,56 @@ TEMP_DIR.mkdir(exist_ok=True)
 # Maximale Download-Größe (Schutz vor Disk-Füllung), konfigurierbar via Env
 MAX_DOWNLOAD_SIZE = int(os.environ.get('MAX_DOWNLOAD_SIZE_BYTES', 2 * 1024 ** 3))  # Default: 2 GiB
 
-# Erlaubte Video-Plattformen (SSRF-Schutz: URLs werden serverseitig geprüft,
-# bevor sie an yt-dlp übergeben werden)
-ALLOWED_VIDEO_HOSTS = (
-    'youtube.com',
-    'youtu.be',
-    'tiktok.com',
-    'vm.tiktok.com',
-    'reddit.com',
-    'redd.it',
-)
 
+def is_safe_url(url):
+    """
+    SSRF-Schutz: Lässt beliebige öffentliche http(s)-URLs zu, lehnt aber URLs ab,
+    die (über DNS) auf interne/private Adressen zeigen. So funktionieren alle von
+    yt-dlp unterstützten Seiten, ohne dass der Server als Proxy auf interne
+    Dienste (localhost, Cloud-Metadaten, LAN) missbraucht werden kann.
 
-def is_allowed_url(url):
-    """Prüft, ob die URL zu einer erlaubten Video-Plattform gehört"""
+    Restrisiko: Zwischen dieser Prüfung und yt-dlps eigener DNS-Auflösung kann ein
+    bösartiger Nameserver die Antwort wechseln (DNS-Rebinding/TOCTOU). Für eine
+    self-hosted Single-User-App ist das akzeptabel; echte Härtung wäre eine
+    Netz-Isolation des Backend-Containers (kein Routing zu Host/LAN/Metadaten).
+    """
     if not isinstance(url, str):
         return False
     try:
         parsed = urlparse(url)
     except ValueError:
         return False
+
     if parsed.scheme not in ('http', 'https'):
         return False
-    hostname = (parsed.hostname or '').lower()
-    return any(
-        hostname == allowed or hostname.endswith('.' + allowed)
-        for allowed in ALLOWED_VIDEO_HOSTS
-    )
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    # Alle Adressen auflösen; DNS-Fehler => ablehnen
+    try:
+        addrinfos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return False
+    if not addrinfos:
+        return False
+
+    # Ablehnen, wenn IRGENDEINE aufgelöste IP nicht öffentlich routbar ist
+    for family, _type, _proto, _canon, sockaddr in addrinfos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            return False
+        # IPv4-mapped IPv6 (z.B. ::ffff:127.0.0.1) vor Klassifizierung entpacken
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+
+    return True
 
 
 def clean_old_files():
@@ -161,6 +186,7 @@ def get_video_info(url):
             formats.sort(key=lambda x: extract_height(x.get('resolution', '0p')), reverse=True)
 
             return {
+                'is_playlist': False,
                 'title': info.get('title', 'Unknown'),
                 'thumbnail': info.get('thumbnail'),
                 'duration': info.get('duration'),
@@ -173,64 +199,169 @@ def get_video_info(url):
         raise
 
 
-def download_video_file(url, format_id):
-    """
-    Lädt Video herunter und gibt Dateipfad zurück
-    Falls das gewünschte Format nicht verfügbar ist, wird das beste verfügbare Format verwendet
-    """
-    # Eindeutiger Dateiname
-    file_id = str(uuid.uuid4())
-    output_template = str(TEMP_DIR / f"{file_id}.%(ext)s")
+def _entry_url(entry):
+    """Ermittelt eine auflösbare URL für einen Playlist-Eintrag (flat extraction)"""
+    if entry.get('url'):
+        return entry['url']
+    if entry.get('webpage_url'):
+        return entry['webpage_url']
+    # Fallback für flache YouTube-Einträge, die nur eine ID tragen
+    if entry.get('ie_key') == 'Youtube' and entry.get('id'):
+        return f"https://www.youtube.com/watch?v={entry['id']}"
+    return None
 
-    # Versuche zuerst mit dem gewünschten Format
-    # Format-String: format_id+bestaudio = Video-Format + bestes Audio, automatisch gemergt
-    # Fallback auf 'best' wenn Merge nicht möglich
+
+def _format_playlist(info):
+    """Baut die Playlist-Antwort aus einem yt-dlp extract_flat-Ergebnis"""
+    entries = list(info.get('entries') or [])  # extract_flat liefert lazy entries
+    formatted = []
+    for entry in entries:
+        if not entry:
+            continue
+        url = _entry_url(entry)
+        if not url:
+            continue
+        thumbnail = entry.get('thumbnail')
+        if not thumbnail and entry.get('thumbnails'):
+            thumbnail = entry['thumbnails'][0].get('url')
+        formatted.append({
+            # url als Fallback-ID garantiert einen eindeutigen, nicht-leeren Key
+            'id': entry.get('id') or url,
+            'title': entry.get('title') or entry.get('id') or 'Unbekannt',
+            'thumbnail': thumbnail,
+            'duration': entry.get('duration'),
+            'url': url,
+        })
+
+    return {
+        'is_playlist': True,
+        'title': info.get('title'),
+        'uploader': info.get('uploader') or info.get('channel'),
+        'entry_count': len(formatted),
+        'entries': formatted,
+    }
+
+
+def get_url_info(url):
+    """
+    Untersucht eine URL mit flacher Extraktion. Ist es eine Playlist/ein Kanal,
+    wird die Playlist-Antwort zurückgegeben. Bei einem einzelnen Video wird auf
+    die volle Format-Extraktion (get_video_info) zurückgegriffen.
+    """
     ydl_opts = {
-        'format': f'{format_id}+bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': 'in_playlist',
+        'skip_download': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+
+    if info.get('_type') == 'playlist' or 'entries' in info:
+        return _format_playlist(info)
+
+    # Einzelvideo: volle Extraktion für die Formatliste
+    return get_video_info(url)
+
+
+def _build_format_opts(format_id, quality, output_template):
+    """
+    Erstellt die yt-dlp-Optionen für einen Download und gibt zusätzlich die
+    erwartete Dateiendung zurück. Unterstützt entweder eine konkrete format_id
+    (Einzelvideo-Auswahl) oder eine Qualitäts-Voreinstellung (Playlists).
+    """
+    opts = {
         'outtmpl': output_template,
         'quiet': False,
         'no_warnings': False,
         'max_filesize': MAX_DOWNLOAD_SIZE,
-        'merge_output_format': 'mp4',
-        'postprocessors': [{
-            'key': 'FFmpegVideoConvertor',
-            'preferedformat': 'mp4',
-        }],
+        # Verhindert, dass eine Watch-URL mit &list= versehentlich die ganze
+        # Playlist in einem einzelnen Request herunterlädt
+        'noplaylist': True,
     }
+
+    if quality == 'audio':
+        opts['format'] = 'bestaudio/best'
+        opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+        return opts, 'mp3'
+
+    # Video: Qualitäts-Voreinstellung oder konkrete format_id
+    if quality == '1080':
+        fmt = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'
+    elif quality == '720':
+        fmt = 'bestvideo[height<=720]+bestaudio/best[height<=720]'
+    elif quality == 'best':
+        fmt = 'bestvideo+bestaudio/best'
+    elif format_id:
+        fmt = f'{format_id}+bestaudio/best'
+    else:
+        fmt = 'bestvideo+bestaudio/best'
+
+    opts['format'] = fmt
+    opts['merge_output_format'] = 'mp4'
+    opts['postprocessors'] = [{
+        'key': 'FFmpegVideoConvertor',
+        'preferedformat': 'mp4',
+    }]
+    return opts, 'mp4'
+
+
+def _find_output_file(file_id, expected_ext):
+    """
+    Findet die tatsächlich erzeugte Datei. Nach Postprocessing (mp3/mp4) stimmt
+    prepare_filename nicht zwingend mit der Endung überein, daher wird zuerst die
+    erwartete Endung geprüft und sonst nach {file_id}.* gesucht.
+    """
+    expected = TEMP_DIR / f"{file_id}.{expected_ext}"
+    if expected.exists():
+        return str(expected)
+    matches = list(TEMP_DIR.glob(f"{file_id}.*"))
+    return str(matches[0]) if matches else None
+
+
+def download_video_file(url, format_id=None, quality=None):
+    """
+    Lädt ein Video herunter und gibt (Dateipfad, Titel, Endung) zurück.
+    Falls das gewünschte Format nicht verfügbar ist, wird auf das beste
+    verfügbare Format zurückgegriffen.
+    """
+    file_id = str(uuid.uuid4())
+    output_template = str(TEMP_DIR / f"{file_id}.%(ext)s")
+
+    ydl_opts, expected_ext = _build_format_opts(format_id, quality, output_template)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Starte Download: URL={url}, Format={format_id}")
+            logger.info(f"Starte Download: URL={url}, Format={format_id}, Qualität={quality}")
             info = ydl.extract_info(url, download=True)
 
-            # Finde die heruntergeladene Datei
-            downloaded_file = ydl.prepare_filename(info)
-
-            if os.path.exists(downloaded_file):
+            downloaded_file = _find_output_file(file_id, expected_ext)
+            if downloaded_file:
                 logger.info(f"Download erfolgreich: {downloaded_file}")
-                return downloaded_file, info.get('title', 'video')
-            else:
-                raise Exception("Datei wurde nicht gefunden nach dem Download")
+                return downloaded_file, info.get('title', 'video'), expected_ext
+            raise Exception("Datei wurde nicht gefunden nach dem Download")
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
-        # Wenn das Format nicht verfügbar ist, versuche mit 'best' Format
-        if "Requested format is not available" in error_msg:
-            logger.warning(f"Format {format_id} nicht verfügbar, verwende bestes verfügbares Format")
+        # Wenn das Format nicht verfügbar ist, versuche das beste verfügbare Format
+        # (nur für Video-Downloads; Audio nutzt bereits bestaudio/best)
+        if "Requested format is not available" in error_msg and expected_ext != 'mp3':
+            logger.warning("Format nicht verfügbar, verwende bestes verfügbares Format")
             ydl_opts['format'] = 'best'
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     logger.info(f"Starte Download mit bestem Format: URL={url}")
                     info = ydl.extract_info(url, download=True)
 
-                    # Finde die heruntergeladene Datei
-                    downloaded_file = ydl.prepare_filename(info)
-
-                    if os.path.exists(downloaded_file):
+                    downloaded_file = _find_output_file(file_id, expected_ext)
+                    if downloaded_file:
                         logger.info(f"Download erfolgreich mit bestem Format: {downloaded_file}")
-                        return downloaded_file, info.get('title', 'video')
-                    else:
-                        raise Exception("Datei wurde nicht gefunden nach dem Download")
+                        return downloaded_file, info.get('title', 'video'), expected_ext
+                    raise Exception("Datei wurde nicht gefunden nach dem Download")
             except Exception as fallback_error:
                 logger.error(f"Fehler beim Fallback-Download: {fallback_error}")
                 raise
@@ -261,23 +392,54 @@ def video_info():
 
         url = data['url']
 
-        if not is_allowed_url(url):
-            logger.warning(f"Abgelehnte URL (nicht erlaubter Host): {url}")
-            return jsonify({'error': 'URL wird nicht unterstützt. Erlaubt sind YouTube, TikTok und Reddit.'}), 400
+        if not is_safe_url(url):
+            logger.warning(f"Abgelehnte URL (ungültig oder interne Adresse): {url}")
+            return jsonify({'error': 'URL ungültig oder zeigt auf eine nicht erlaubte (interne) Adresse.'}), 400
 
         logger.info(f"Video-Info angefordert für: {url}")
 
         # Bereinige alte Dateien
         clean_old_files()
 
-        # Hole Video-Informationen
-        info = get_video_info(url)
+        # Hole Informationen (erkennt automatisch Playlists vs. Einzelvideos)
+        info = get_url_info(url)
 
         return jsonify(info), 200
 
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"yt-dlp Download-Fehler: {e}")
         return jsonify({'error': 'Video konnte nicht geladen werden. Bitte prüfe die URL.'}), 400
+    except Exception as e:
+        logger.error(f"Unerwarteter Fehler: {e}")
+        return jsonify({'error': 'Interner Serverfehler'}), 500
+
+
+@app.route('/api/playlist-info', methods=['POST'])
+def playlist_info():
+    """
+    Endpoint zum Abrufen der Einträge einer Playlist/eines Kanals
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'url' not in data:
+            return jsonify({'error': 'URL fehlt'}), 400
+
+        url = data['url']
+
+        if not is_safe_url(url):
+            logger.warning(f"Abgelehnte URL (ungültig oder interne Adresse): {url}")
+            return jsonify({'error': 'URL ungültig oder zeigt auf eine nicht erlaubte (interne) Adresse.'}), 400
+
+        logger.info(f"Playlist-Info angefordert für: {url}")
+
+        info = get_playlist_info(url)
+
+        return jsonify(info), 200
+
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"yt-dlp Download-Fehler: {e}")
+        return jsonify({'error': 'Playlist konnte nicht geladen werden. Bitte prüfe die URL.'}), 400
     except Exception as e:
         logger.error(f"Unerwarteter Fehler: {e}")
         return jsonify({'error': 'Interner Serverfehler'}), 500
@@ -291,20 +453,21 @@ def download():
     try:
         data = request.get_json()
 
-        if not data or 'url' not in data or 'format_id' not in data:
-            return jsonify({'error': 'URL oder format_id fehlt'}), 400
+        url = data.get('url') if data else None
+        format_id = data.get('format_id') if data else None
+        quality = data.get('quality') if data else None
 
-        url = data['url']
-        format_id = data['format_id']
+        if not url or (not format_id and not quality):
+            return jsonify({'error': 'URL und format_id oder quality erforderlich'}), 400
 
-        if not is_allowed_url(url):
-            logger.warning(f"Abgelehnte URL (nicht erlaubter Host): {url}")
-            return jsonify({'error': 'URL wird nicht unterstützt. Erlaubt sind YouTube, TikTok und Reddit.'}), 400
+        if not is_safe_url(url):
+            logger.warning(f"Abgelehnte URL (ungültig oder interne Adresse): {url}")
+            return jsonify({'error': 'URL ungültig oder zeigt auf eine nicht erlaubte (interne) Adresse.'}), 400
 
-        logger.info(f"Download angefordert: URL={url}, Format={format_id}")
+        logger.info(f"Download angefordert: URL={url}, Format={format_id}, Qualität={quality}")
 
         # Download Video
-        file_path, title = download_video_file(url, format_id)
+        file_path, title, ext = download_video_file(url, format_id=format_id, quality=quality)
 
         # Sende Datei und lösche danach
         try:
@@ -312,13 +475,14 @@ def download():
             safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).rstrip()
             safe_title = safe_title[:100]  # Limitiere Länge
 
-            filename = f"{safe_title}.mp4"
+            filename = f"{safe_title}.{ext}"
+            mimetype = 'audio/mpeg' if ext == 'mp3' else 'video/mp4'
 
             return send_file(
                 file_path,
                 as_attachment=True,
                 download_name=filename,
-                mimetype='video/mp4'
+                mimetype=mimetype
             )
         finally:
             # Lösche Datei nach dem Senden
