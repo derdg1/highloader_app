@@ -78,11 +78,19 @@ function CookieSettings() {
       {open && (
         <div className="cookie-panel">
           <p className="cookie-help">
-            Für private Inhalte wie deine <strong>TikTok-Favoriten</strong> oder
+            Für private Inhalte wie deine <strong>TikTok-Sammlungen</strong> oder
             {' '}<strong>xHamster-Favoriten</strong> braucht der Server deine
             Login-Cookies. Exportiere eine <code>cookies.txt</code> (Netscape-Format)
             mit einer Browser-Erweiterung wie „Get cookies.txt LOCALLY" und lade sie
             hier hoch.
+          </p>
+          <p className="cookie-help">
+            <strong>TikTok:</strong> Sammlung öffnen und URL kopieren:
+            {' '}<code>https://www.tiktok.com/@username/collection/Name-ID</code>
+            {' '}(Liked-Videos unter <code>/like</code> unterstützt yt-dlp nicht).<br />
+            <strong>xHamster:</strong> Eigene Favoritenliste öffnen und URL kopieren:
+            {' '}<code>https://xhamster.com/my/favorites/videos/…</code> — auch
+            Länder-Domains wie <code>ge.xhamster.com</code> funktionieren.
           </p>
           <p className="cookie-privacy">
             ⚠️ Hinweis: Die Cookies sind aktive Sitzungs-Tokens und werden auf dem
