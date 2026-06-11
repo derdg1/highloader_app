@@ -56,9 +56,10 @@ BROWSER_UA = (
     '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 )
 
-# Scraper-Grenzen gegen Endlos-Scraping
+# Scraper-Grenzen gegen Endlos-Scraping. Obergrenze beachten: das Frontend
+# wartet max. 60 s auf /api/video-info, sehr viele Seiten sprengen das.
 SCRAPER_MAX_PAGES = int(os.environ.get('SCRAPER_MAX_PAGES', 20))
-SCRAPER_MAX_VIDEOS = int(os.environ.get('SCRAPER_MAX_VIDEOS', 500))
+SCRAPER_MAX_VIDEOS = int(os.environ.get('SCRAPER_MAX_VIDEOS', 1000))
 SCRAPER_TIMEOUT = 15  # Sekunden pro HTTP-Request
 
 
@@ -352,8 +353,8 @@ def scrape_xhamster_favorites(url):
     seen = set()
     entries = []
 
+    page_url = base
     for page in range(1, SCRAPER_MAX_PAGES + 1):
-        page_url = base if page == 1 else f"{base}?page={page}"
         try:
             resp = session.get(page_url, timeout=SCRAPER_TIMEOUT)
         except requests.RequestException as e:
@@ -372,8 +373,9 @@ def scrape_xhamster_favorites(url):
             logger.info(f"xHamster-Scraper: Seite {page} → HTTP {resp.status_code}, Stop")
             break
 
+        soup = BeautifulSoup(resp.text, 'html.parser')
         new_on_page = 0
-        for video_url, title, thumb in _parse_xhamster_videos(resp.text, origin):
+        for video_url, title, thumb in _parse_xhamster_videos(soup, origin):
             if video_url in seen:
                 continue
             seen.add(video_url)
@@ -392,6 +394,17 @@ def scrape_xhamster_favorites(url):
         if new_on_page == 0 or len(entries) >= SCRAPER_MAX_VIDEOS:
             break
 
+        # Pager-Link folgen (wie yt-dlps XHamsterUser-Extractor); xHamster
+        # ignoriert ?page=N auf vielen Listen, daher zuerst der echte Link
+        next_url = _find_next_page_url(soup, resp.url)
+        if not next_url:
+            next_url = f"{base}?page={page + 1}"
+        if next_url == page_url:
+            break
+        page_url = next_url
+
+    logger.info(f"xHamster-Scraper: {len(entries)} Videos auf {page} Seite(n) gefunden")
+
     if not entries:
         raise ScraperError(
             'Keine Videos in den Favoriten gefunden. Mögliche Ursachen: '
@@ -408,15 +421,37 @@ def scrape_xhamster_favorites(url):
     }
 
 
-def _parse_xhamster_videos(html, origin='https://xhamster.com'):
+def _find_next_page_url(soup, current_url):
     """
-    Extrahiert (video_url, title, thumbnail) aus einer xHamster-Listenseite.
-    Sucht nach Video-Detail-Links (Pfad beginnt mit /videos/...) und nimmt
-    Titel/Thumbnail mit, wenn vorhanden. Liefert nur eindeutige Video-Links.
-    Relative Links werden auf dem Origin der Listenseite aufgelöst, damit die
-    Domain-Variante (z.B. ge.xhamster.com) zu den Cookies passt.
+    Findet den Link zur nächsten Listen-Seite. xHamster rendert einen Pager
+    mit data-page="next" (so blättert auch yt-dlps XHamsterUser-Extractor);
+    Fallbacks: rel="next" auf <a> bzw. <link>. Liefert None, wenn es keine
+    weitere Seite gibt oder der Link die xHamster-Domain verlässt.
     """
-    soup = BeautifulSoup(html, 'html.parser')
+    a = soup.find('a', attrs={'data-page': 'next'})
+    if not a:
+        a = soup.find('a', rel='next')
+    if not a:
+        a = soup.find('link', rel='next')
+    href = a.get('href') if a else None
+    if not href:
+        return None
+    next_url = urljoin(current_url, href)
+    host = (urlparse(next_url).hostname or '').lower()
+    if not _XHAMSTER_HOST_RE.search(host):
+        return None
+    return next_url
+
+
+def _parse_xhamster_videos(soup, origin='https://xhamster.com'):
+    """
+    Extrahiert (video_url, title, thumbnail) aus einer geparsten
+    xHamster-Listenseite. Sucht nach Video-Detail-Links (Pfad beginnt mit
+    /videos/...) und nimmt Titel/Thumbnail mit, wenn vorhanden. Liefert nur
+    eindeutige Video-Links. Relative Links werden auf dem Origin der
+    Listenseite aufgelöst, damit die Domain-Variante (z.B. ge.xhamster.com)
+    zu den Cookies passt.
+    """
     results = []
     seen = set()
     for a in soup.find_all('a', href=True):
