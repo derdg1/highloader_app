@@ -284,16 +284,35 @@ def _format_playlist(info):
     }
 
 
+class ScraperError(Exception):
+    """Scraper-Fehler mit nutzerfreundlicher Meldung (wird als 400 ausgeliefert)."""
+
+
+# Deckt auch Länder-Subdomains (ge.xhamster.com) und Mirror-Domains
+# (xhamster2.com, xhamster.desi, xhday.com, ...) ab — analog zu yt-dlps Extractor
+_XHAMSTER_HOST_RE = re.compile(
+    r'(?:^|\.)(?:xhamster\d*\.(?:com|one|desi)|xhday\.com|xhvid\.com)$'
+)
+
+
 def is_xhamster_favorites_url(url):
-    """Erkennt eine xHamster-Favoriten-URL (z.B. /users/NAME/favorites/videos)."""
+    """
+    Erkennt xHamster-Favoriten-URLs:
+    - fremdes Profil: /users/NAME/favorites[/videos]
+    - eigene Liste (eingeloggt): /my/favorites/videos[/<id>-<name>]
+    """
     try:
         parsed = urlparse(url)
     except ValueError:
         return False
     host = (parsed.hostname or '').lower()
-    if not (host == 'xhamster.com' or host.endswith('.xhamster.com')):
+    if not _XHAMSTER_HOST_RE.search(host):
         return False
-    return bool(re.match(r'^/users/[^/]+/favorites', parsed.path or ''))
+    path = parsed.path or ''
+    return bool(
+        re.match(r'^/users/[^/]+/favorites', path)
+        or re.match(r'^/my/favorites', path)
+    )
 
 
 def _load_cookies_into_session(session):
@@ -315,6 +334,16 @@ def scrape_xhamster_favorites(url):
     unverändert über yt-dlp. Bewusst defensiv (Seiten-/Video-Limit, Timeout),
     da die HTML-Struktur sich jederzeit ändern kann.
     """
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+
+    # Die eigene Favoritenliste (/my/...) ist nur eingeloggt erreichbar
+    if (parsed.path or '').startswith('/my/') and not COOKIES_FILE.exists():
+        raise ScraperError(
+            'Diese Favoriten-Seite erfordert einen Login. '
+            'Bitte lade zuerst deine cookies.txt unter „Anmeldung / Cookies" hoch.'
+        )
+
     session = requests.Session()
     session.headers.update({'User-Agent': BROWSER_UA})
     _load_cookies_into_session(session)
@@ -330,12 +359,21 @@ def scrape_xhamster_favorites(url):
         except requests.RequestException as e:
             logger.warning(f"xHamster-Scraper: Seite {page} nicht abrufbar: {e}")
             break
+
+        # xHamster leitet ohne gültige Session auf /login um
+        if '/login' in (urlparse(resp.url).path or ''):
+            raise ScraperError(
+                'xHamster verlangt einen Login für diese Seite. Deine Cookies '
+                'fehlen oder sind abgelaufen — bitte exportiere eine frische '
+                'cookies.txt (eingeloggt, gleiche Domain) und lade sie erneut hoch.'
+            )
+
         if resp.status_code != 200:
             logger.info(f"xHamster-Scraper: Seite {page} → HTTP {resp.status_code}, Stop")
             break
 
         new_on_page = 0
-        for video_url, title, thumb in _parse_xhamster_videos(resp.text):
+        for video_url, title, thumb in _parse_xhamster_videos(resp.text, origin):
             if video_url in seen:
                 continue
             seen.add(video_url)
@@ -354,6 +392,13 @@ def scrape_xhamster_favorites(url):
         if new_on_page == 0 or len(entries) >= SCRAPER_MAX_VIDEOS:
             break
 
+    if not entries:
+        raise ScraperError(
+            'Keine Videos in den Favoriten gefunden. Mögliche Ursachen: '
+            'Cookies abgelaufen, die Liste ist leer, oder xHamster hat das '
+            'Seitenlayout geändert.'
+        )
+
     return {
         'is_playlist': True,
         'title': 'xHamster-Favoriten',
@@ -363,11 +408,13 @@ def scrape_xhamster_favorites(url):
     }
 
 
-def _parse_xhamster_videos(html):
+def _parse_xhamster_videos(html, origin='https://xhamster.com'):
     """
     Extrahiert (video_url, title, thumbnail) aus einer xHamster-Listenseite.
-    Sucht nach Video-Detail-Links (/videos/...) und nimmt Titel/Thumbnail mit,
-    wenn vorhanden. Liefert nur eindeutige, plausible Video-Links.
+    Sucht nach Video-Detail-Links (Pfad beginnt mit /videos/...) und nimmt
+    Titel/Thumbnail mit, wenn vorhanden. Liefert nur eindeutige Video-Links.
+    Relative Links werden auf dem Origin der Listenseite aufgelöst, damit die
+    Domain-Variante (z.B. ge.xhamster.com) zu den Cookies passt.
     """
     soup = BeautifulSoup(html, 'html.parser')
     results = []
@@ -376,10 +423,12 @@ def _parse_xhamster_videos(html):
         href = a['href']
         if '/videos/' not in href:
             continue
-        full = urljoin('https://xhamster.com/', href)
+        full = urljoin(origin + '/', href)
         # auf die reine Video-URL normalisieren
-        full = full.split('?')[0]
-        if not re.search(r'/videos/[^/]+', full):
+        full = full.split('?')[0].split('#')[0]
+        # Nur Video-Detailseiten — schließt Listen-Links wie
+        # /my/favorites/videos/... oder /users/NAME/favorites/videos aus
+        if not re.match(r'^/videos/[^/]+', urlparse(full).path or ''):
             continue
         if full in seen:
             continue
@@ -643,6 +692,9 @@ def video_info():
 
         return jsonify(info), 200
 
+    except ScraperError as e:
+        logger.warning(f"Scraper-Fehler: {e}")
+        return jsonify({'error': str(e)}), 400
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"yt-dlp Download-Fehler: {e}")
         return jsonify({'error': 'Video konnte nicht geladen werden. Bitte prüfe die URL.'}), 400
@@ -674,6 +726,9 @@ def playlist_info():
 
         return jsonify(info), 200
 
+    except ScraperError as e:
+        logger.warning(f"Scraper-Fehler: {e}")
+        return jsonify({'error': str(e)}), 400
     except yt_dlp.utils.DownloadError as e:
         logger.error(f"yt-dlp Download-Fehler: {e}")
         return jsonify({'error': 'Playlist konnte nicht geladen werden. Bitte prüfe die URL.'}), 400

@@ -85,9 +85,12 @@ function CookieSettings() {
             hier hoch.
           </p>
           <p className="cookie-help">
-            <strong>TikTok:</strong> URL-Format: <code>https://www.tiktok.com/@username/collection/ID</code>
-            {' '} — gehe zu deinen Sammlungen, kopiere die URL aus der Adressleiste.<br />
-            <strong>xHamster:</strong> URL-Format: <code>https://www.xhamster.com/users/username/favorites/videos</code>
+            <strong>TikTok:</strong> Sammlung öffnen und URL kopieren:
+            {' '}<code>https://www.tiktok.com/@username/collection/Name-ID</code>
+            {' '}(Liked-Videos unter <code>/like</code> unterstützt yt-dlp nicht).<br />
+            <strong>xHamster:</strong> Eigene Favoritenliste öffnen und URL kopieren:
+            {' '}<code>https://xhamster.com/my/favorites/videos/…</code> — auch
+            Länder-Domains wie <code>ge.xhamster.com</code> funktionieren.
           </p>
           <p className="cookie-privacy">
             ⚠️ Hinweis: Die Cookies sind aktive Sitzungs-Tokens und werden auf dem
