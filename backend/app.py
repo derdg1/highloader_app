@@ -784,6 +784,52 @@ def delete_cookies():
         return jsonify({'error': 'Cookies konnten nicht gelöscht werden'}), 500
 
 
+@app.route('/api/debug/xhamster-initials', methods=['POST'])
+def debug_xhamster_initials():
+    """
+    DEBUG-Endpoint: Fetcht die xHamster-Favoriten-Seite und gibt nur die
+    Pagination-Properties aus dem window.initials-JSON zurück (ohne
+    Session-Tokens oder andere sensitive Daten). Hilft zu diagnizieren,
+    warum der Scraper nur eine Seite findet.
+
+    POST-Body: {"url": "https://..."}
+    Response: {"pagination_props": {...}} oder Fehler
+    """
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({'error': 'url erforderlich'}), 400
+
+        url = data['url']
+        if not is_safe_url(url):
+            return jsonify({'error': 'URL ungültig oder intern'}), 400
+
+        session = requests.Session()
+        session.headers.update({'User-Agent': BROWSER_UA})
+        _load_cookies_into_session(session)
+
+        resp = session.get(url, timeout=SCRAPER_TIMEOUT)
+        if resp.status_code != 200:
+            return jsonify({'error': f'Seite antwortet mit {resp.status_code}'}), 400
+
+        initials = _extract_initials(resp.text)
+        if not initials:
+            return jsonify({'error': 'window.initials nicht gefunden'}), 400
+
+        pgntn = _find_pagination_props(initials)
+        if not pgntn:
+            return jsonify({
+                'error': 'pagination props nicht gefunden',
+                'initials_keys': list(initials.keys())
+            }), 400
+
+        return jsonify({'pagination_props': pgntn}), 200
+
+    except Exception as e:
+        logger.error(f"DEBUG-Fehler: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/video-info', methods=['POST'])
 def video_info():
     """
