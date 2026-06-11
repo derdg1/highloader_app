@@ -18,8 +18,9 @@ COPY app.py .
 # Unprivilegierter User für den App-Prozess
 RUN useradd --system --create-home --uid 1000 appuser
 
-# Erstelle Verzeichnis für temporäre Downloads
-RUN mkdir -p /tmp/video_downloads && chown appuser:appuser /tmp/video_downloads
+# Verzeichnisse für temporäre Downloads und persistente Cookies anlegen
+RUN mkdir -p /tmp/video_downloads /data \
+    && chown appuser:appuser /tmp/video_downloads /data
 
 USER appuser
 

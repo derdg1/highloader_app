@@ -206,3 +206,58 @@ export function validateVideoUrl(url) {
     return false
   }
 }
+
+/**
+ * Lädt eine cookies.txt (Netscape-Format) zum Backend hoch.
+ * @param {File} file
+ * @returns {Promise<Object>} { present, uploaded_at }
+ */
+export async function uploadCookies(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/cookies`,
+    { method: 'POST', body: formData },
+    30000
+  )
+
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || 'Cookies konnten nicht gespeichert werden')
+  }
+  return data
+}
+
+/**
+ * Fragt ab, ob Cookies hinterlegt sind (ohne Inhalt).
+ * @returns {Promise<Object>} { present, uploaded_at }
+ */
+export async function getCookieStatus() {
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/cookies/status`,
+    { method: 'GET' },
+    10000
+  )
+  if (!response.ok) {
+    return { present: false, uploaded_at: null }
+  }
+  return response.json()
+}
+
+/**
+ * Löscht die gespeicherten Cookies.
+ * @returns {Promise<Object>} { present: false }
+ */
+export async function deleteCookies() {
+  const response = await fetchWithTimeout(
+    `${API_BASE_URL}/cookies`,
+    { method: 'DELETE' },
+    10000
+  )
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.error || 'Cookies konnten nicht gelöscht werden')
+  }
+  return data
+}

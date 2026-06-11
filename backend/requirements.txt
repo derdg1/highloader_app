@@ -4,3 +4,5 @@ flask-cors==4.0.0
 # soll immer die aktuelle Version mit den neuesten Extractor-Fixes installiert werden
 yt-dlp>=2025.11.12
 gunicorn==21.2.0
+requests==2.32.3
+beautifulsoup4==4.12.3
