@@ -6,6 +6,7 @@ import DownloadButton from './components/DownloadButton'
 import PlaylistView from './components/PlaylistView'
 import DownloadHistory from './components/DownloadHistory'
 import DownloadStatusBar from './components/DownloadStatusBar'
+import CookieSettings from './components/CookieSettings'
 import { fetchUrlInfo, triggerDownload } from './services/api'
 import './styles/App.css'
 
@@ -172,6 +173,7 @@ function App() {
       </header>
 
       <main className={`app-main ${isDownloading ? 'has-status-bar' : ''}`}>
+        <CookieSettings />
         <VideoInput onSubmit={handleUrlSubmit} loading={loading} />
 
         {error && (

@@ -21,6 +21,7 @@ services:
       - app-network
     volumes:
       - video_cache:/tmp/video_downloads
+      - cookie_store:/data
 
   # Frontend Service (Nginx + React PWA)
   pwa-video-downloader:
@@ -51,3 +52,4 @@ networks:
 
 volumes:
   video_cache:
+  cookie_store:

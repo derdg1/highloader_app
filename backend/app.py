@@ -7,13 +7,19 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import yt_dlp
 import os
+import re
 import socket
 import ipaddress
 import tempfile
 import logging
+import http.cookiejar
+from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import uuid
+
+import requests
+from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
@@ -34,6 +40,42 @@ TEMP_DIR.mkdir(exist_ok=True)
 
 # Maximale Download-Größe (Schutz vor Disk-Füllung), konfigurierbar via Env
 MAX_DOWNLOAD_SIZE = int(os.environ.get('MAX_DOWNLOAD_SIZE_BYTES', 2 * 1024 ** 3))  # Default: 2 GiB
+
+# Persistenter Speicher für die Login-Cookies (cookies.txt im Netscape-Format).
+# WICHTIG: außerhalb von TEMP_DIR, damit clean_old_files() die Datei nicht löscht.
+COOKIES_DIR = Path(os.environ.get('COOKIES_DIR', '/data'))
+COOKIES_FILE = COOKIES_DIR / 'cookies.txt'
+try:
+    COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as e:
+    logger.error(f"Cookie-Verzeichnis konnte nicht angelegt werden: {e}")
+
+# Browser-User-Agent für den xHamster-Scraper (yt-dlp setzt seinen eigenen)
+BROWSER_UA = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+)
+
+# Scraper-Grenzen gegen Endlos-Scraping
+SCRAPER_MAX_PAGES = int(os.environ.get('SCRAPER_MAX_PAGES', 20))
+SCRAPER_MAX_VIDEOS = int(os.environ.get('SCRAPER_MAX_VIDEOS', 500))
+SCRAPER_TIMEOUT = 15  # Sekunden pro HTTP-Request
+
+
+def _cookie_opts():
+    """Liefert das cookiefile-Opt für yt-dlp, wenn eine cookies.txt vorliegt."""
+    if COOKIES_FILE.exists():
+        return {'cookiefile': str(COOKIES_FILE)}
+    return {}
+
+
+def _base_ydl_opts(extra=None):
+    """Basis-yt-dlp-Optionen inkl. eingemischter Login-Cookies (falls vorhanden)."""
+    opts = {}
+    opts.update(_cookie_opts())
+    if extra:
+        opts.update(extra)
+    return opts
 
 
 def is_safe_url(url):
@@ -104,11 +146,11 @@ def get_video_info(url):
     """
     Holt Video-Informationen mit yt-dlp
     """
-    ydl_opts = {
+    ydl_opts = _base_ydl_opts({
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
-    }
+    })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -242,18 +284,134 @@ def _format_playlist(info):
     }
 
 
+def is_xhamster_favorites_url(url):
+    """Erkennt eine xHamster-Favoriten-URL (z.B. /users/NAME/favorites/videos)."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or '').lower()
+    if not (host == 'xhamster.com' or host.endswith('.xhamster.com')):
+        return False
+    return bool(re.match(r'^/users/[^/]+/favorites', parsed.path or ''))
+
+
+def _load_cookies_into_session(session):
+    """Lädt die gespeicherte cookies.txt (Netscape) in eine requests-Session."""
+    if not COOKIES_FILE.exists():
+        return
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(COOKIES_FILE))
+        jar.load(ignore_discard=True, ignore_expires=True)
+        session.cookies.update(jar)
+    except Exception as e:
+        logger.warning(f"Cookies konnten nicht in die Scraper-Session geladen werden: {e}")
+
+
+def scrape_xhamster_favorites(url):
+    """
+    Scrapet die xHamster-Favoriten-Seite(n) und liefert die Einträge im
+    _format_playlist-Shape. Der eigentliche Download je Eintrag läuft danach
+    unverändert über yt-dlp. Bewusst defensiv (Seiten-/Video-Limit, Timeout),
+    da die HTML-Struktur sich jederzeit ändern kann.
+    """
+    session = requests.Session()
+    session.headers.update({'User-Agent': BROWSER_UA})
+    _load_cookies_into_session(session)
+
+    base = url.split('?')[0].rstrip('/')
+    seen = set()
+    entries = []
+
+    for page in range(1, SCRAPER_MAX_PAGES + 1):
+        page_url = base if page == 1 else f"{base}?page={page}"
+        try:
+            resp = session.get(page_url, timeout=SCRAPER_TIMEOUT)
+        except requests.RequestException as e:
+            logger.warning(f"xHamster-Scraper: Seite {page} nicht abrufbar: {e}")
+            break
+        if resp.status_code != 200:
+            logger.info(f"xHamster-Scraper: Seite {page} → HTTP {resp.status_code}, Stop")
+            break
+
+        new_on_page = 0
+        for video_url, title, thumb in _parse_xhamster_videos(resp.text):
+            if video_url in seen:
+                continue
+            seen.add(video_url)
+            new_on_page += 1
+            entries.append({
+                'id': video_url,
+                'title': title or 'xHamster-Video',
+                'thumbnail': thumb,
+                'duration': None,
+                'url': video_url,
+            })
+            if len(entries) >= SCRAPER_MAX_VIDEOS:
+                break
+
+        # Keine neuen Videos auf dieser Seite → Ende der Favoriten erreicht
+        if new_on_page == 0 or len(entries) >= SCRAPER_MAX_VIDEOS:
+            break
+
+    return {
+        'is_playlist': True,
+        'title': 'xHamster-Favoriten',
+        'uploader': None,
+        'entry_count': len(entries),
+        'entries': entries,
+    }
+
+
+def _parse_xhamster_videos(html):
+    """
+    Extrahiert (video_url, title, thumbnail) aus einer xHamster-Listenseite.
+    Sucht nach Video-Detail-Links (/videos/...) und nimmt Titel/Thumbnail mit,
+    wenn vorhanden. Liefert nur eindeutige, plausible Video-Links.
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    results = []
+    seen = set()
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        if '/videos/' not in href:
+            continue
+        full = urljoin('https://xhamster.com/', href)
+        # auf die reine Video-URL normalisieren
+        full = full.split('?')[0]
+        if not re.search(r'/videos/[^/]+', full):
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+
+        title = a.get('title') or a.get_text(strip=True) or None
+        thumb = None
+        img = a.find('img')
+        if img:
+            thumb = img.get('src') or img.get('data-src')
+        results.append((full, title, thumb))
+    return results
+
+
 def get_url_info(url):
     """
     Untersucht eine URL mit flacher Extraktion. Ist es eine Playlist/ein Kanal,
     wird die Playlist-Antwort zurückgegeben. Bei einem einzelnen Video wird auf
     die volle Format-Extraktion (get_video_info) zurückgegriffen.
+
+    Sonderfall xHamster-Favoriten: yt-dlp listet hier die hochgeladenen Videos
+    statt der Favoriten (yt-dlp-Issue #6084), daher eigener Scraper.
     """
-    ydl_opts = {
+    if is_xhamster_favorites_url(url):
+        return scrape_xhamster_favorites(url)
+
+    ydl_opts = _base_ydl_opts({
         'quiet': True,
         'no_warnings': True,
         'extract_flat': 'in_playlist',
         'skip_download': True,
-    }
+    })
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -270,7 +428,7 @@ def _build_format_opts(format_id, quality, output_template):
     erwartete Dateiendung zurück. Unterstützt entweder eine konkrete format_id
     (Einzelvideo-Auswahl) oder eine Qualitäts-Voreinstellung (Playlists).
     """
-    opts = {
+    opts = _base_ydl_opts({
         'outtmpl': output_template,
         'quiet': False,
         'no_warnings': False,
@@ -278,7 +436,7 @@ def _build_format_opts(format_id, quality, output_template):
         # Verhindert, dass eine Watch-URL mit &list= versehentlich die ganze
         # Playlist in einem einzelnen Request herunterlädt
         'noplaylist': True,
-    }
+    })
 
     if quality == 'audio':
         opts['format'] = 'bestaudio/best'
@@ -379,6 +537,85 @@ def health_check():
     return jsonify({'status': 'ok', 'service': 'video-downloader-backend'}), 200
 
 
+def _looks_like_netscape_cookies(content):
+    """Prüft die erste nicht-leere Zeile auf den Netscape-Cookie-Header."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        return stripped.startswith('# HTTP Cookie File') or \
+            stripped.startswith('# Netscape HTTP Cookie File')
+    return False
+
+
+def _cookie_status():
+    """Status der gespeicherten Cookies (ohne den Inhalt preiszugeben)."""
+    if not COOKIES_FILE.exists():
+        return {'present': False, 'uploaded_at': None}
+    mtime = COOKIES_FILE.stat().st_mtime
+    uploaded_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
+    return {'present': True, 'uploaded_at': uploaded_at}
+
+
+@app.route('/api/cookies', methods=['POST'])
+def upload_cookies():
+    """
+    Nimmt eine cookies.txt (Netscape-Format) entgegen und speichert sie persistent.
+    Akzeptiert multipart (Feld 'file') oder JSON ({'content': '...'}).
+    Der Inhalt wird niemals zurückgegeben oder geloggt.
+    """
+    try:
+        content = None
+        if 'file' in request.files:
+            content = request.files['file'].read().decode('utf-8', errors='replace')
+        else:
+            data = request.get_json(silent=True) or {}
+            content = data.get('content')
+
+        if not content or not content.strip():
+            return jsonify({'error': 'Keine Cookie-Daten erhalten'}), 400
+
+        if not _looks_like_netscape_cookies(content):
+            return jsonify({
+                'error': "Ungültiges Format. Erwartet wird eine cookies.txt im "
+                         "Netscape-Format (erste Zeile '# Netscape HTTP Cookie File')."
+            }), 400
+
+        # Newlines auf LF normalisieren (yt-dlp/MozillaCookieJar sind hier heikel)
+        normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+
+        COOKIES_DIR.mkdir(parents=True, exist_ok=True)
+        # Restriktiv schreiben (0600), da Session-Tokens enthalten sind
+        fd = os.open(str(COOKIES_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(normalized)
+
+        logger.info("Cookies aktualisiert")
+        return jsonify(_cookie_status()), 200
+    except Exception as e:
+        logger.error(f"Fehler beim Speichern der Cookies: {e}")
+        return jsonify({'error': 'Cookies konnten nicht gespeichert werden'}), 500
+
+
+@app.route('/api/cookies/status', methods=['GET'])
+def cookies_status():
+    """Gibt zurück, ob Cookies hinterlegt sind (ohne Inhalt)."""
+    return jsonify(_cookie_status()), 200
+
+
+@app.route('/api/cookies', methods=['DELETE'])
+def delete_cookies():
+    """Löscht die gespeicherten Cookies."""
+    try:
+        if COOKIES_FILE.exists():
+            COOKIES_FILE.unlink()
+            logger.info("Cookies gelöscht")
+        return jsonify({'present': False, 'uploaded_at': None}), 200
+    except Exception as e:
+        logger.error(f"Fehler beim Löschen der Cookies: {e}")
+        return jsonify({'error': 'Cookies konnten nicht gelöscht werden'}), 500
+
+
 @app.route('/api/video-info', methods=['POST'])
 def video_info():
     """
@@ -433,7 +670,7 @@ def playlist_info():
 
         logger.info(f"Playlist-Info angefordert für: {url}")
 
-        info = get_playlist_info(url)
+        info = get_url_info(url)
 
         return jsonify(info), 200
 
