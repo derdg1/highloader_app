@@ -8,6 +8,7 @@ from flask_cors import CORS
 import yt_dlp
 import os
 import re
+import json
 import socket
 import ipaddress
 import tempfile
@@ -394,9 +395,16 @@ def scrape_xhamster_favorites(url):
         if new_on_page == 0 or len(entries) >= SCRAPER_MAX_VIDEOS:
             break
 
-        # Pager-Link folgen (wie yt-dlps XHamsterUser-Extractor); xHamster
-        # ignoriert ?page=N auf vielen Listen, daher zuerst der echte Link
-        next_url = _find_next_page_url(soup, resp.url)
+        # Nächste Seite ermitteln — Prioritätskette:
+        # 1. window.initials-JSON (pageLinkTemplate, so blättert xHamster
+        #    wirklich; ?page=N wird auf diesen Listen ignoriert)
+        # 2. Pager-Link im DOM (a[data-page=next] / rel=next)
+        # 3. ?page=N als letzter Notnagel (Dedup-Stop fängt Wiederholungen)
+        has_pagination, next_url = _next_page_from_initials(resp.text)
+        if has_pagination and not next_url:
+            break  # Pagination vorhanden, aber keine weitere Seite → Ende
+        if not next_url:
+            next_url = _find_next_page_url(soup, resp.url)
         if not next_url:
             next_url = f"{base}?page={page + 1}"
         if next_url == page_url:
@@ -419,6 +427,72 @@ def scrape_xhamster_favorites(url):
         'entry_count': len(entries),
         'entries': entries,
     }
+
+
+def _extract_initials(html):
+    """Parst das window.initials-JSON, das xHamster in jede Seite einbettet."""
+    m = re.search(r'window\.initials\s*=\s*(\{.*?\})\s*;?\s*</script>', html, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except ValueError:
+        return None
+
+
+def _find_pagination_props(obj):
+    """
+    Sucht rekursiv das Pagination-Objekt (erkennbar am pageLinkTemplate).
+    Die Position im initials-JSON variiert je nach Seitentyp (z.B.
+    'pagination' oder 'galleryPage.paginationProps'), daher die Suche.
+    """
+    if isinstance(obj, dict):
+        if 'pageLinkTemplate' in obj:
+            return obj
+        for value in obj.values():
+            found = _find_pagination_props(value)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_pagination_props(value)
+            if found is not None:
+                return found
+    return None
+
+
+def _next_page_from_initials(html):
+    """
+    Ermittelt die nächste Listen-Seite aus dem window.initials-JSON.
+    xHamster blättert über ein pageLinkTemplate mit {#}-Platzhalter
+    (z.B. .../favorites/videos/{#}) plus 'next'-Seitennummer — derselbe
+    Mechanismus, den auch gallery-dl nutzt.
+
+    Rückgabe: (pagination_vorhanden, next_url_oder_None). Ist die Pagination
+    vorhanden, aber ohne nächste Seite, ist das Listenende erreicht.
+    """
+    initials = _extract_initials(html)
+    if not initials:
+        return False, None
+    pgntn = _find_pagination_props(initials)
+    if not pgntn:
+        return False, None
+
+    template = pgntn.get('pageLinkTemplate') or ''
+    next_page = pgntn.get('next')
+    if not next_page:
+        active = pgntn.get('active')
+        max_pages = pgntn.get('maxPages') or pgntn.get('maxPage')
+        if isinstance(active, int) and isinstance(max_pages, int) and active < max_pages:
+            next_page = active + 1
+    if not next_page or '{#}' not in template:
+        return True, None
+
+    next_url = template.replace('{#}', str(next_page))
+    host = (urlparse(next_url).hostname or '').lower()
+    if not _XHAMSTER_HOST_RE.search(host):
+        return True, None
+    return True, next_url
 
 
 def _find_next_page_url(soup, current_url):
