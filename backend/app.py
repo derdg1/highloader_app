@@ -433,10 +433,14 @@ def _extract_initials(html):
     """Parst das window.initials-JSON, das xHamster in jede Seite einbettet."""
     m = re.search(r'window\.initials\s*=\s*(\{.*?\})\s*;?\s*</script>', html, re.DOTALL)
     if not m:
+        logger.info(f"xHamster: window.initials-Pattern nicht gefunden (HTML-Länge: {len(html)})")
         return None
     try:
-        return json.loads(m.group(1))
-    except ValueError:
+        data = json.loads(m.group(1))
+        logger.info(f"xHamster: initials-JSON geparsed, Top-Level-Keys: {list(data.keys())}")
+        return data
+    except ValueError as e:
+        logger.info(f"xHamster: JSON-Parse-Fehler: {e}")
         return None
 
 
@@ -473,11 +477,14 @@ def _next_page_from_initials(html):
     """
     initials = _extract_initials(html)
     if not initials:
+        logger.info("xHamster: window.initials nicht gefunden")
         return False, None
     pgntn = _find_pagination_props(initials)
     if not pgntn:
+        logger.info("xHamster: pagination props nicht gefunden in initials")
         return False, None
 
+    logger.info(f"xHamster pagination props: {pgntn}")
     template = pgntn.get('pageLinkTemplate') or ''
     next_page = pgntn.get('next')
     if not next_page:
@@ -486,12 +493,15 @@ def _next_page_from_initials(html):
         if isinstance(active, int) and isinstance(max_pages, int) and active < max_pages:
             next_page = active + 1
     if not next_page or '{#}' not in template:
+        logger.info(f"xHamster: kein next_page ({next_page}) oder Template hat keine {{#}} ({template})")
         return True, None
 
     next_url = template.replace('{#}', str(next_page))
     host = (urlparse(next_url).hostname or '').lower()
     if not _XHAMSTER_HOST_RE.search(host):
+        logger.info(f"xHamster: next_url-Host {host} nicht erkannt")
         return True, None
+    logger.info(f"xHamster: nächste Seite → {next_url}")
     return True, next_url
 
 
