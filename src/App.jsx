@@ -22,12 +22,33 @@ function App() {
   const [downloadingId, setDownloadingId] = useState(null)
   const [batchProgress, setBatchProgress] = useState(null)
   const [downloadStatus, setDownloadStatus] = useState(null)
+  const [sharedUrl, setSharedUrl] = useState('')
 
   useEffect(() => {
     const savedHistory = localStorage.getItem('downloadHistory')
     if (savedHistory) {
       setHistory(JSON.parse(savedHistory))
     }
+  }, [])
+
+  // Verarbeitet eine per Share-Sheet/Deep-Link übergebene Video-URL
+  // (?url=..., oder ?text=/?title= wie vom Web Share Target geliefert).
+  // Extrahiert die erste http(s)-URL und lädt die Video-Infos automatisch.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.toString() === '') return
+
+    const sharedValue = params.get('url') || params.get('text') || params.get('title') || ''
+    const match = sharedValue.match(/https?:\/\/\S+/)
+
+    // Parameter aus der Adresszeile entfernen, damit ein Reload nicht erneut lädt
+    window.history.replaceState({}, '', window.location.pathname)
+
+    if (match) {
+      setSharedUrl(match[0])
+      handleUrlSubmit(match[0])
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Hängt einen Eintrag an die Download-Historie an (max. 20, persistiert)
@@ -174,7 +195,7 @@ function App() {
 
       <main className={`app-main ${isDownloading ? 'has-status-bar' : ''}`}>
         <CookieSettings />
-        <VideoInput onSubmit={handleUrlSubmit} loading={loading} />
+        <VideoInput onSubmit={handleUrlSubmit} loading={loading} initialValue={sharedUrl} />
 
         {error && (
           <div className="error-message">

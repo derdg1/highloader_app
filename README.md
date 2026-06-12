@@ -11,6 +11,7 @@ Progressive Web App zum Herunterladen von Videos von YouTube, TikTok und Reddit 
 - 📜 Download-Historie
 - ⚡ Offline-fähig (PWA)
 - 📲 Installierbar auf iOS/Android
+- 📤 Share-Sheet-Integration (Deep-Link `?url=...`, Web Share Target, Apple-Kurzbefehl)
 - 🔧 Komplettes Backend mit yt-dlp
 - 🐳 Docker-ready für einfaches Deployment
 
@@ -97,6 +98,40 @@ docker build -t highloader-frontend .
 # Backend
 docker build -t highloader-backend ./backend
 ```
+
+## Teilen aus dem Share-Sheet
+
+Die App versteht Deep-Links der Form `http://<app-host>:8888/?url=<video-url>`.
+Wird sie so geöffnet, lädt sie automatisch Vorschau und Qualitätsauswahl für das
+Video — danach nur noch auf Download tippen. Auch `?text=...` funktioniert, die
+erste enthaltene http(s)-URL wird extrahiert.
+
+### iOS & macOS (Apple Kurzbefehle)
+
+Safari unterstützt für PWAs kein natives Share-Target, deshalb läuft das Teilen
+über einen Kurzbefehl. Einmal eingerichtet, synchronisiert er via iCloud auf
+iPhone, iPad und Mac:
+
+1. **Kurzbefehle**-App öffnen → neuen Kurzbefehl erstellen, z. B. „VidDL Download".
+2. In den Kurzbefehl-Details (ⓘ): **„Im Share-Sheet anzeigen"** aktivieren und
+   die Eingabetypen auf **URLs** und **Text** beschränken.
+3. Aktion **„URL"** hinzufügen mit Inhalt:
+   `http://<app-host>:8888/?url=` direkt gefolgt von der Variable
+   **„Kurzbefehl-Eingabe"** (Shortcut Input).
+4. Aktion **„URL öffnen"** hinzufügen (öffnet die URL aus Schritt 3).
+   - Optional, aber empfohlen: davor die Aktion **„URL codieren"** auf die
+     Kurzbefehl-Eingabe anwenden und in Schritt 3 deren Ergebnis verwenden —
+     dann bleiben auch Links mit `&` (z. B. `watch?v=...&t=...`) vollständig erhalten.
+5. Fertig. In YouTube, Safari & Co. auf **Teilen** → **„VidDL Download"** tippen —
+   die App öffnet sich im Browser und zeigt das Video zum Download an.
+
+`<app-host>` durch die Adresse deines Servers ersetzen (z. B. `192.168.1.10`).
+
+### Android
+
+Nach Installation der PWA („Zum Startbildschirm hinzufügen" in Chrome) erscheint
+die App dank des `share_target`-Eintrags im Manifest direkt im Android
+Share-Sheet — kein Kurzbefehl nötig.
 
 ## Konfiguration
 
