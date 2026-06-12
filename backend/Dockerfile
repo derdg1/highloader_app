@@ -14,6 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Kopiere Anwendungscode
 COPY app.py .
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
 
 # Unprivilegierter User für den App-Prozess
 RUN useradd --system --create-home --uid 1000 appuser
@@ -31,5 +33,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --quiet --tries=1 --spider http://localhost:8000/api/health || exit 1
 
-# Starte mit Gunicorn für Production
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "300", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
+# Starte mit Gunicorn für Production (Entrypoint aktualisiert vorher yt-dlp)
+CMD ["./entrypoint.sh"]

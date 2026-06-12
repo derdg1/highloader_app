@@ -10,6 +10,10 @@ on:
     branches:
       - main
       - master
+  # Wöchentlicher Rebuild, damit die latest-Images immer ein aktuelles
+  # yt-dlp enthalten (Watchtower zieht die neuen Images automatisch)
+  schedule:
+    - cron: '0 4 * * 1'
   workflow_dispatch:
 
 env:
