@@ -1,8 +1,15 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import '../styles/VideoInput.css'
 
-function VideoInput({ onSubmit, loading }) {
-  const [inputValue, setInputValue] = useState('')
+function VideoInput({ onSubmit, loading, initialValue = '' }) {
+  const [inputValue, setInputValue] = useState(initialValue)
+
+  // Übernimmt eine von außen gesetzte URL (z. B. per Share-Sheet geteilt)
+  useEffect(() => {
+    if (initialValue) {
+      setInputValue(initialValue)
+    }
+  }, [initialValue])
 
   const handleSubmit = (e) => {
     e.preventDefault()
